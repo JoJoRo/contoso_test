@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession, DataFrame, functions as F
 from pyspark.sql.types import (
-    StructType,
-    StructField,
     StringType,
     LongType,
     IntegerType,
@@ -22,6 +21,7 @@ from pyspark.sql.types import (
 )
 
 from ingestion_engine.etl.schema.csv_validator import load_and_validate_metadata
+from ingestion_engine.etl.schema.olap_validator import olap_load_and_validate_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -39,15 +39,25 @@ class RawHubJob:
         self.config = config or {}
         self.metadata_path = metadata_path
 
-        logger.info("Loading and validating metadata from: %s", self.metadata_path)
+        logger.info("Loading metadata from: %s", self.metadata_path)
         try:
-            self.metadata = load_and_validate_metadata(self.metadata_path)
+            raw = self._read_text_file(self.metadata_path)
+            src_type = ((json.loads(raw).get("input_entity") or {}).get("source") or {}).get("type", "")
+            src_type = (src_type or "").strip().lower()
+
+            if src_type == "olap":
+                self.metadata = olap_load_and_validate_metadata(raw)
+                self.source_kind = "olap"
+            else:
+                self.metadata = load_and_validate_metadata(raw)
+                self.source_kind = "csv"
         except Exception:
             logger.exception("Failed to load/validate metadata from: %s", self.metadata_path)
             raise
 
         logger.info(
-            "Metadata loaded. enabled=%s mode=%s target=%s.%s.%s",
+            "Metadata loaded. kind=%s enabled=%s mode=%s target=%s.%s.%s",
+            getattr(self, "source_kind", None),
             getattr(self.metadata, "enabled", None),
             getattr(getattr(self.metadata, "ingestion_information", None), "mode", None),
             getattr(getattr(self.metadata, "target_entity", None), "catalog", None),
@@ -70,11 +80,8 @@ class RawHubJob:
         src = self.metadata.input_entity.source
         tgt = self.metadata.target_entity
         mode = (self.metadata.ingestion_information.mode or "append").strip().lower()
-
-        input_path = self._build_input_path(self.config, src.folder, src.file_name)
         full_table_name = f"{tgt.catalog}.{tgt.schema}.{tgt.table}"
 
-        logger.info("Resolved input_path=%s", input_path)
         logger.info("Resolved target_table=%s mode=%s", full_table_name, mode)
 
         try:
@@ -83,11 +90,17 @@ class RawHubJob:
             logger.exception("Failed to ensure schema exists: %s.%s", tgt.catalog, tgt.schema)
             raise
 
-        logger.info("Reading CSV from: %s", input_path)
+        # Read source
         try:
-            df = self._read_csv(spark, input_path, src.read_options)
+            if (src.type or "").strip().lower() == "olap":
+                logger.info("Reading OLAP source")
+                df = self._read_olap(spark, src)
+            else:
+                input_path = self._build_input_path(self.config, src.folder, src.file_name)
+                logger.info("Reading CSV from: %s", input_path)
+                df = self._read_csv(spark, input_path, src.read_options)
         except Exception:
-            logger.exception("Failed to read CSV from: %s", input_path)
+            logger.exception("Failed to read source")
             raise
 
         try:
@@ -129,6 +142,10 @@ class RawHubJob:
 
         logger.info("RawHubJob completed successfully")
 
+    def _read_text_file(self, path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
     def _build_input_path(self, config: Dict[str, Any], folder: str, file_name: str) -> str:
         base = (
             config.get("input_base_path")
@@ -152,6 +169,45 @@ class RawHubJob:
 
         logger.debug("CSV read options: %s", opts)
         return spark.read.options(**opts).csv(path)
+
+    def _read_olap(self, spark: SparkSession, src) -> DataFrame:
+        conn = src.connection
+        auth = conn.authentication
+        obj = src.object
+
+        # Minimal: Azure SQL via JDBC. In real runs you'd pull secret from a secret scope.
+        url = f"jdbc:sqlserver://{conn.host}:{conn.port};database={conn.database};encrypt=true;trustServerCertificate=false;"
+
+        # Keep it simple: for service principal we still need an access token flow;
+        # this assumes you use a username/password compatible auth OR you inject token externally.
+        # If you already have a working method, adapt only these 2 options.
+        jdbc_opts: Dict[str, Any] = {
+            "url": url,
+            "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+        }
+
+        # If your environment uses username/password for demos:
+        if auth.mode.strip().lower() in {"sql", "username_password", "basic"}:
+            jdbc_opts["user"] = auth.client_id
+            jdbc_opts["password"] = auth.client_secret
+
+        table = f"{obj.schema}.{obj.table}"
+        predicate = getattr(obj, "predicate", None)
+        if predicate:
+            dbtable = f"(SELECT * FROM {table} WHERE {predicate}) AS t"
+        else:
+            dbtable = table
+        jdbc_opts["dbtable"] = dbtable
+
+        # Optional read options (partitioning etc.) are passed through as-is
+        ro = (src.read_options or {}).copy()
+        for k, v in list(ro.items()):
+            if v is None:
+                ro.pop(k)
+        jdbc_opts.update(ro)
+
+        logger.debug("OLAP JDBC options keys: %s", list(jdbc_opts.keys()))
+        return spark.read.format("jdbc").options(**jdbc_opts).load()
 
     def _apply_schema_and_transforms(self, df: DataFrame, schema_meta) -> DataFrame:
         logger.info("Input columns count=%d", len(df.columns))
