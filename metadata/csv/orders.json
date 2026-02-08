@@ -6,7 +6,7 @@
   "input_entity" : {
     "source": {
       "type": "csv",
-      "path": "https://contosostoragedatalake.blob.core.windows.net/landing/orders/",
+      "folder": "abfss://landing@contosostohierachical.dfs.core.windows.net/orders/",
       "file_name": "contoso_orders.csv",
       "read_options": { "header": true, "delimiter": ",", "encoding": "UTF-8" },
       "schema": {
