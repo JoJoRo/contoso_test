@@ -1,0 +1,63 @@
+{
+  "version": 1.0,
+  "enabled": true,
+
+  "input_entity": {
+    "source": {
+      "type": "olap",
+      "subtype": "azure_sql_serverless",
+      "connection": {
+        "host": "contoso-sql.database.windows.net",
+        "database": "contoso_olap",
+        "port": 1433,
+        "authentication": {
+          "mode": "service_principal",
+          "tenant_id": "<TENANT_ID>",
+          "client_id": "<CLIENT_ID>",
+          "client_secret": "<CLIENT_SECRET>"
+        },
+        "encrypt": true,
+        "trust_server_certificate": false
+      },
+      "object": {
+        "schema": "dbo",
+        "table": "customers",
+        "predicate": null
+      },
+      "read_options": {
+        "fetchsize": 10000,
+        "partition_column": "customer_id",
+        "lower_bound": 1,
+        "upper_bound": 10000000,
+        "num_partitions": 8
+      },
+      "schema": {
+        "columns": [
+          { "name": "customer_id", "type": "long", "nullable": false },
+          { "name": "customer_code", "type": "string", "nullable": false },
+          { "name": "first_name", "type": "string", "nullable": true },
+          { "name": "last_name", "type": "string", "nullable": true },
+          {
+            "name": "created_date",
+            "type": "date",
+            "nullable": true,
+            "transform_sql": "to_date(created_date)",
+            "date_format": "yyyy-mm-dd"
+          },
+          { "name": "country", "type": "string", "nullable": true }
+        ]
+      }
+    }
+  },
+
+  "target_entity": {
+    "catalog": "default",
+    "schema": "raw_hub",
+    "table": "customers",
+    "columns_mapping": []
+  },
+
+  "ingestion_information": {
+    "mode": "append"
+  }
+}
