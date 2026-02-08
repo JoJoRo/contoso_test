@@ -1,0 +1,4 @@
+{
+  "version": 1.0,
+  "landing": "abfss://landing@contosostohierachical.dfs.core.windows.net/"
+}

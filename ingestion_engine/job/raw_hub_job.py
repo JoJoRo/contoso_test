@@ -29,7 +29,7 @@ class RawHubJob:
 
     def __init__(self, config: Dict[str, Any], metadata_path: str):
         """
-        Check metadata path given and Raw Hub given.
+        Check metadata path given, validate schema and get it as an object.
 
         :param config:
         :param metadata_path:
