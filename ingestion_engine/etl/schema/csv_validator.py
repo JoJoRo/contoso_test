@@ -45,21 +45,21 @@ class Schema:
 @dataclass
 class Source:
     type: str
-    path: str
+    folder: str
     file_name: str
     read_options: Dict[str, Any]
     schema: Schema
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Source":
-        required = ["type", "path", "file_name", "read_options", "schema"]
+        required = ["type", "folder", "file_name", "read_options", "schema"]
         for field in required:
             if field not in data:
                 raise ValueError(f"Source missing required field: {field}")
 
         return Source(
             type=data["type"],
-            path=data["path"],
+            folder=data["folder"],
             file_name=data["file_name"],
             read_options=data["read_options"],
             schema=Schema.from_dict(data["schema"]),

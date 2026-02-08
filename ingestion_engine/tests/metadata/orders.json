@@ -1,0 +1,39 @@
+{
+  "version": 1.0,
+
+  "enabled": true,
+
+  "input_entity" : {
+    "source": {
+      "type": "csv",
+      "folder": "orders",
+      "file_name": "contoso_orders.csv",
+      "read_options": { "header": true, "delimiter": ",", "encoding": "UTF-8" },
+      "schema": {
+        "columns": [
+          { "name": "order_id", "type": "long", "nullable": false },
+          { "name": "customer_id", "type": "string", "nullable": false},
+          { "name": "order_amount", "type": "decimal(12,2)", "nullable": false },
+          {
+            "name": "order_date",
+            "type": "date",
+            "nullable": true,
+            "transform_sql": "to_date(order_date)",
+            "date_format": "yyyy-mm-dd"
+          }
+        ]
+      }
+    }
+  },
+
+  "target_entity": {
+    "catalog": "default",
+    "schema": "raw_hub",
+    "table": "orders",
+    "columns_mapping": []
+  },
+
+  "ingestion_information": {
+    "mode": "append"
+  }
+}
