@@ -110,10 +110,10 @@ class IngestionInformation:
         return IngestionInformation(mode=data["mode"])
 
 
-# --------- Root Config ---------
+# --------- Root CSV Readers ---------
 
 @dataclass
-class Config:
+class CSVReader:
     version: float
     enabled: bool
     input_entity: InputEntity
@@ -121,7 +121,7 @@ class Config:
     ingestion_information: IngestionInformation
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "Config":
+    def from_dict(data: Dict[str, Any]) -> "CSVReader":
         required = [
             "version",
             "enabled",
@@ -134,7 +134,7 @@ class Config:
             if field not in data:
                 raise ValueError(f"Missing required field at root level: {field}")
 
-        return Config(
+        return CSVReader(
             version=data["version"],
             enabled=data["enabled"],
             input_entity=InputEntity.from_dict(data["input_entity"]),
@@ -147,17 +147,17 @@ class Config:
 
 # --------- Public API ---------
 
-def load_and_validate_config(json_string: str) -> Config:
+def load_and_validate_metadata(json_string: str) -> CSVReader:
     try:
         data = json.loads(json_string)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON: {e}")
 
-    return Config.from_dict(data)
+    return CSVReader.from_dict(data)
 
 
 # --------- Example Usage ---------
 if __name__ == "__main__":
-    with open("ingestion_engine/tests/config/orders.json", "r") as f:
-        config = load_and_validate_config(f.read())
-    print("Config is valid.")
+    with open("ingestion_engine/tests/metadata/orders.json", "r") as f:
+        metadata = load_and_validate_metadata(f.read())
+    print("CSV metadata is valid.")
