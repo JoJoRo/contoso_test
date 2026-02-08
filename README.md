@@ -23,3 +23,5 @@ data cleaning can be added as well as feature engineering.
 - Passwords are stored at compute level or in Databricks/Azure vaults
 - Local virtual env was created using Python 3.12
 - No need for Azure Data Factory, but it can be used to orchestrate the pipelines and may be useful if ingesting a massive amount of files
+- `config > load_config.py` is not currently used sin the data in each metadata is enough; for different environments or multiple sources this data would be kept here
+

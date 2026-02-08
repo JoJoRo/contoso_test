@@ -1,0 +1,38 @@
+{
+  "version": 1.0,
+  "enabled": true,
+
+  "input_entity": {
+    "sources": [
+      {
+        "type": "delta_table",
+        "catalog": "default",
+        "schema": "raw_hub",
+        "table": "customers",
+        "alias": "customers"
+      },
+      {
+        "type": "delta_table",
+        "catalog": "default",
+        "schema": "raw_hub",
+        "table": "orders",
+        "alias": "orders"
+      }
+    ]
+  },
+
+  "target_entity": {
+    "catalog": "default",
+    "schema": "data_hub",
+    "table": "loyal_customers"
+  },
+
+  "ingestion_information": {
+    "mode": "overwrite"
+  },
+
+  "transformation": {
+    "loyalty_min_orders": 3,
+    "loyalty_min_total_spend": 200.0
+  }
+}
