@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
@@ -23,29 +24,48 @@ from pyspark.sql.types import (
 from ingestion_engine.etl.schema.csv_validator import load_and_validate_metadata
 
 
+logger = logging.getLogger(__name__)
+
+
 class RawHubJob:
     CDC_INGESTION_DATE_COL = "ingestion_date"
     CDC_RUN_ID_COL = "run_id"
 
     def __init__(self, config: Dict[str, Any], metadata_path: str):
-        """
-        Check metadata path given, validate schema and get it as an object.
-
-        :param config:
-        :param metadata_path:
-        """
         if metadata_path is None:
+            logger.error("metadata_path not given")
             raise ValueError("metadata_path not given")
 
         self.config = config or {}
         self.metadata_path = metadata_path
-        self.metadata = load_and_validate_metadata(self.metadata_path)
+
+        logger.info("Loading and validating metadata from: %s", self.metadata_path)
+        try:
+            self.metadata = load_and_validate_metadata(self.metadata_path)
+        except Exception:
+            logger.exception("Failed to load/validate metadata from: %s", self.metadata_path)
+            raise
+
+        logger.info(
+            "Metadata loaded. enabled=%s mode=%s target=%s.%s.%s",
+            getattr(self.metadata, "enabled", None),
+            getattr(getattr(self.metadata, "ingestion_information", None), "mode", None),
+            getattr(getattr(self.metadata, "target_entity", None), "catalog", None),
+            getattr(getattr(self.metadata, "target_entity", None), "schema", None),
+            getattr(getattr(self.metadata, "target_entity", None), "table", None),
+        )
 
     def run(self, spark: Optional[SparkSession] = None) -> None:
         if not self.metadata.enabled:
+            logger.info("Job disabled by metadata. Exiting.")
             return
 
-        spark = spark or SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+        logger.info("Starting RawHubJob run")
+        try:
+            spark = spark or SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+        except Exception:
+            logger.exception("Failed to acquire/create SparkSession")
+            raise
 
         src = self.metadata.input_entity.source
         tgt = self.metadata.target_entity
@@ -54,40 +74,67 @@ class RawHubJob:
         input_path = self._build_input_path(self.config, src.folder, src.file_name)
         full_table_name = f"{tgt.catalog}.{tgt.schema}.{tgt.table}"
 
-        # Ensure catalog/schema exist (no catalog for pre-UC Databricks workspaces)
-        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {tgt.catalog}.{tgt.schema}")
+        logger.info("Resolved input_path=%s", input_path)
+        logger.info("Resolved target_table=%s mode=%s", full_table_name, mode)
 
-        # Read input CSV using options
-        df = self._read_csv(spark, input_path, src.read_options)
+        try:
+            spark.sql(f"CREATE SCHEMA IF NOT EXISTS {tgt.catalog}.{tgt.schema}")
+        except Exception:
+            logger.exception("Failed to ensure schema exists: %s.%s", tgt.catalog, tgt.schema)
+            raise
 
-        # Cast/apply transforms according to metadata schema
-        df = self._apply_schema_and_transforms(df, src.schema)
+        logger.info("Reading CSV from: %s", input_path)
+        try:
+            df = self._read_csv(spark, input_path, src.read_options)
+        except Exception:
+            logger.exception("Failed to read CSV from: %s", input_path)
+            raise
 
-        # Add CDC columns (ingestion_date + run_id)
-        df = self._add_cdc(df, spark)
+        try:
+            logger.info("Applying schema and transforms")
+            df = self._apply_schema_and_transforms(df, src.schema)
+        except Exception:
+            logger.exception("Failed while applying schema/transforms")
+            raise
 
-        # Handle overwrite: drop table first
+        try:
+            logger.info("Adding CDC columns: %s, %s", self.CDC_INGESTION_DATE_COL, self.CDC_RUN_ID_COL)
+            df = self._add_cdc(df, spark)
+        except Exception:
+            logger.exception("Failed while adding CDC columns")
+            raise
+
         if mode == "overwrite":
-            spark.sql(f"DROP TABLE IF EXISTS {full_table_name}")
+            logger.warning("Overwrite mode requested. Dropping table if exists: %s", full_table_name)
+            try:
+                spark.sql(f"DROP TABLE IF EXISTS {full_table_name}")
+            except Exception:
+                logger.exception("Failed to drop table in overwrite mode: %s", full_table_name)
+                raise
 
-        # Create table if missing (after overwrite drop too)
-        self._ensure_table_exists(spark, full_table_name, df)
+        try:
+            logger.info("Ensuring table exists: %s", full_table_name)
+            self._ensure_table_exists(spark, full_table_name, df)
+        except Exception:
+            logger.exception("Failed to ensure table exists: %s", full_table_name)
+            raise
 
-        # Write
-        writer = df.write.format("delta").mode("append")  # always append after ensuring table exists
-        writer.saveAsTable(full_table_name)
+        logger.info("Writing to Delta table (append): %s", full_table_name)
+        try:
+            writer = df.write.format("delta").mode("append")
+            writer.saveAsTable(full_table_name)
+        except Exception:
+            logger.exception("Failed while writing to table: %s", full_table_name)
+            raise
+
+        logger.info("RawHubJob completed successfully")
 
     def _build_input_path(self, config: Dict[str, Any], folder: str, file_name: str) -> str:
-        """
-        config can optionally provide:
-          - base_path: e.g. 'dbfs:/mnt/landing' or '/dbfs/mnt/landing'
-          - input_base_path: alternative key
-        """
         base = (
-                config.get("input_base_path")
-                or config.get("base_path")
-                or config.get("landing_path")
-                or ""
+            config.get("input_base_path")
+            or config.get("base_path")
+            or config.get("landing_path")
+            or ""
         ).rstrip("/")
 
         if base:
@@ -97,80 +144,88 @@ class RawHubJob:
     def _read_csv(self, spark: SparkSession, path: str, read_options: Dict[str, Any]) -> DataFrame:
         opts = (read_options or {}).copy()
 
-        # Spark expects string values for options usually; also header can be bool -> normalize
         for k, v in list(opts.items()):
             if isinstance(v, bool):
                 opts[k] = "true" if v else "false"
             elif v is None:
                 opts.pop(k)
 
+        logger.debug("CSV read options: %s", opts)
         return spark.read.options(**opts).csv(path)
 
     def _apply_schema_and_transforms(self, df: DataFrame, schema_meta) -> DataFrame:
-        """
-        For each column in metadata:
-          - if transform_sql exists, apply via expr()
-          - else cast to declared type
-        """
+        logger.info("Input columns count=%d", len(df.columns))
+        logger.debug("Input columns: %s", df.columns)
+
         for col_meta in schema_meta.columns:
             name = col_meta.name
             if name not in df.columns:
-                # If the CSV missed a required column, you'll find out later when writing/casting fails.
-                # Keep it small: raise early for non-nullable expected columns.
                 if col_meta.nullable is False:
+                    logger.error("Missing required column in input: %s", name)
                     raise ValueError(f"Missing required column in input: {name}")
+                logger.warning("Optional column missing in input: %s", name)
                 continue
 
             if col_meta.transform_sql:
+                logger.info("Applying transform on column=%s expr=%s", name, col_meta.transform_sql)
                 df = df.withColumn(name, F.expr(col_meta.transform_sql))
             else:
-                df = df.withColumn(name, F.col(name).cast(self._spark_type(col_meta.type)))
+                spark_type = self._spark_type(col_meta.type)
+                logger.info("Casting column=%s to type=%s", name, col_meta.type)
+                df = df.withColumn(name, F.col(name).cast(spark_type))
 
-        # Optionally enforce not-null for non-nullable columns (simple check)
         non_nullable = [c.name for c in schema_meta.columns if c.nullable is False]
+        if non_nullable:
+            logger.info("Enforcing NOT NULL on columns: %s", non_nullable)
         for c in non_nullable:
             df = df.filter(F.col(c).isNotNull())
 
         return df
 
     def _add_cdc(self, df: DataFrame, spark: SparkSession) -> DataFrame:
-        # ingestion_date as date (UTC)
         df = df.withColumn(self.CDC_INGESTION_DATE_COL, F.to_date(F.current_timestamp()))
 
-        # run_id from Databricks job if available; fallback to Spark app id; then fallback to timestamp
         run_id = self._get_databricks_run_id(spark) or spark.sparkContext.applicationId
         if not run_id:
             run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            logger.warning("No run_id found from Databricks or Spark app id. Using timestamp fallback=%s", run_id)
+        else:
+            logger.info("Using run_id=%s", str(run_id))
 
         df = df.withColumn(self.CDC_RUN_ID_COL, F.lit(str(run_id)))
         return df
 
     def _get_databricks_run_id(self, spark: SparkSession) -> Optional[str]:
-        """
-        Best-effort:
-          - Databricks sets spark.conf 'spark.databricks.job.runId' in Jobs runs (commonly).
-        """
         try:
             v = spark.conf.get("spark.databricks.job.runId", None)
             if v:
+                logger.info("Found Databricks runId from spark.conf: %s", v)
                 return str(v)
+            logger.debug("Databricks runId not present in spark.conf")
         except Exception:
-            pass
+            logger.exception("Error while reading spark.databricks.job.runId from spark.conf")
         return None
 
     def _ensure_table_exists(self, spark: SparkSession, full_table_name: str, df: DataFrame) -> None:
-        if spark.catalog.tableExists(full_table_name):
+        try:
+            exists = spark.catalog.tableExists(full_table_name)
+        except Exception:
+            logger.exception("Failed to check table existence: %s", full_table_name)
+            raise
+
+        if exists:
+            logger.info("Table already exists: %s", full_table_name)
             return
 
-        # Create empty Delta table with the same schema as df
-        empty = df.limit(0)
-        empty.write.format("delta").mode("overwrite").saveAsTable(full_table_name)
+        logger.warning("Table does not exist. Creating empty Delta table: %s", full_table_name)
+        try:
+            empty = df.limit(0)
+            empty.write.format("delta").mode("overwrite").saveAsTable(full_table_name)
+        except Exception:
+            logger.exception("Failed to create table: %s", full_table_name)
+            raise
 
     def _spark_type(self, type_str: str):
-        """
-        Minimal parser for common Spark SQL type strings used in your metadata.
-        Examples: 'long', 'string', 'decimal(12,2)', 'date', 'timestamp', 'int'
-        """
         t = type_str.strip().lower()
 
         if t == "string":
@@ -195,13 +250,11 @@ class RawHubJob:
             return TimestampType()
 
         if t.startswith("decimal"):
-            # decimal(p,s)
-            inside = t[t.find("(") + 1: t.find(")")] if "(" in t and ")" in t else ""
+            inside = t[t.find("(") + 1 : t.find(")")] if "(" in t and ")" in t else ""
             if inside and "," in inside:
                 p_str, s_str = [x.strip() for x in inside.split(",", 1)]
                 return DecimalType(int(p_str), int(s_str))
-            # default decimal if not provided
             return DecimalType(38, 18)
 
-        # fallback: let Spark try to interpret it
+        logger.warning("Unknown type in metadata: %s (passing through to Spark)", type_str)
         return t
