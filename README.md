@@ -10,12 +10,15 @@ as be called separately from Databricks.
 
 Stores the schema of each input source and its output table as well as requirements.
 
-Sub-folder indicate the type source, very broad since this is for an assignment.
+A sub-folder for each type source, very broad and simple since this is for an assignment.
+
+A new sub-folder is added for the different hub (Data Hub), that really behaves more like a silver layer, or maybe feature store (gold layer)
+but was not clarified in the assignment.
 
 ## Ingestion engine
 
-Make ingestion of different data sources to Delta Tables. In the future, tests and 
-data cleaning can be added as well as feature engineering.
+Make ingestion of different data sources to Delta Tables either in Raw Hub (called Raw Zone in the assignment) or Data Hub.
+In the future, tests and data cleaning can be added as well as feature engineering.
 
 
 ## Clarifications
